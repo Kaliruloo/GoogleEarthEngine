@@ -1,0 +1,161 @@
+/* INTRODUCTION TO GOOGLE EARTH ENGINE
+WRITTEN BY KALIRULOO
+LAST UPDATED ON 03/06/2020
+#########################################################################################
+
+Congratulations! If you see this, it means you have opened a script in the code editor
+of GEE. Make sure you save your scripts once in a while using the button on top ↑↑.
+
+## IMPORTING AN IMAGE COLLECTION
+Type "Sentinel" in the search bar ↑↑. You see multiple Sentinel products. We are using 
+"Sentinel-2 MSI: MultiSpectral Instrument, Level-1C". Select this product by importing
+it. Give it the name: "Sentinel21C". You have now imported this image collection as a 
+variable. A variable is nothing more than a place to store data that you want to use 
+in your script.
+
+## UPLOADING A FEATURE COLLECTION
+After this, we are going to upload the shapefile layer as an Asset, this will be called
+a table in GEE.
+←← Uploading an Asset can be done on the left panel.
+
+We want to use this table, so we need to assign the table to a variable: */
+var Landslides = ee.FeatureCollection(table)
+
+// Than we want to display what we have uploaded and make GEE zoom to our asset:
+Map.addLayer({eeObject: Landslides, name: "Landslides"})
+Map.centerObject(Landslides,14);
+
+/* Now select "Satellite view" on the map ↘↘, and check whether the landslide polygons are
+corresponding with landslides as they are seen by sattelites. 
+
+## EXPLORE AVAILABLE IMAGERY
+We want to know if there is actually imagery available for our study area. Hurricane
+Maria happened in September 2017, so we need to have imagery before and after this period
+in order to compare the vegetation after the hurricane with pre-disturbance conditions.
+
+To check this out, we are going to print some information of the image collection
+in the Console of GEE. →→ */
+var Sentinel21C = ee.ImageCollection(Sentinel21C)
+  .filterBounds(Landslides);
+print('Total images available of study area:',Sentinel21C.size());
+var ListOfImages = Sentinel21C.toList(300);
+var IDofImages = ListOfImages.map(function(item) {
+  return ee.Image(item).date();
+});
+print('List of images',IDofImages)
+
+/* What kind of information is now provided in the Console? Try changing ".date" to
+".id", and see which information you get now.
+
+Next we want to display one image on the map: */
+var SelectedImage = ee.Image('COPERNICUS/S2/20151209T144722_20151209T144716_T20PPB');
+Map.addLayer(SelectedImage, {bands:['B4','B3','B2'], max:3000},'RGB_Image');
+
+/* You can change the image you want to display by changing the ID of the imagery using
+the list you printed before. Make sure you keep the part "COPERNICUS/S2/".
+
+## DOWNLOAD IMAGERY
+We can also download imagery or part of an image. To only download imagery of our study
+area, we are going to draw a 'geometry' on the 'map' around Dominica. ↙↙
+The bigger your geometry, the longer it takes. Make sure the geometry covers the
+landslide polygons.
+
+After having done that, we are going to export the image to Google Drive: */
+SelectedImage = SelectedImage.select('B.+')
+Export.image.toDrive({
+  image: SelectedImage,
+  description: 'MyFirstImageFromGEE',
+  scale: 10,
+  region: geometry
+});
+
+/* To be able to export it, you need to press 'RUN' in the Task manager. →→ 
+Have you been able to see your image in your Google Drive?
+
+## CLOUD MASKING
+Clouds are nice to look at sometimes, but we are not interested in them. Therefore, 
+we are going to apply cloud masking to the image collection. This is done by using the
+Sentinel-2 cloud cover band "QA60". 
+
+We have to write a function for this: */
+function cloudMask(image) {
+    var qa60 = image.select('QA60');
+    var allCloudBitMask = (1 << 10) + (1 << 11);
+    var MASK = qa60.bitwiseAnd(allCloudBitMask).eq(0);
+    return image.updateMask(MASK);
+}
+
+/* Note that the function itself does not do anything yet. It does something when we 
+are going to apply the function to the image collection: */
+var CloudMaskImage = ee.ImageCollection(Sentinel21C)
+                  .filterDate('2020-05-25', '2020-05-27')
+                  .filterBounds(table)
+                  .map(cloudMask);
+var rgbVis = {
+  min: 0,
+  max: 3000,
+  bands: ['B4', 'B3', 'B2'],
+};
+Map.addLayer(CloudMaskImage.median(),rgbVis,'CloudMask');
+
+/* ## VEGETATION INDICES
+We can use the bands to calculate vegetation indices values.
+To do this we are creating a function for:
+
+The Normalized Difference Vegetation Index (NDVI): */
+var addNDVI = function(image) {return image.addBands(image.normalizedDifference(['B8','B4']).rename('NDVI'));};
+
+// The Normalized Difference Moisture Index (NDMI): 
+var addNDMI = function(image) {
+  var NDMI = image.expression('((NIR - SWIR) / (NIR + SWIR))', 
+  { 'NIR': image.select('B8'), 
+    'SWIR': image.select('B11') })
+  .rename('NDMI');
+  return image.addBands(NDMI);
+}
+
+// You can now add the indices as new bands to the Image Collection:
+var Indices = ee.ImageCollection(Sentinel21C)
+  .filterBounds(table)
+  .map(cloudMask)
+  .map(addNDVI)
+  .map(addNDMI);
+
+/* ## ANALYSE TIMESERIES DATA FOR A SPECIFIC LANDSLIDE
+Now that we have added the indices as bands, we can analyse how vegetation indices
+respond to landslide disturbance.
+
+To do this, we are creating a timeseries graph for a specific landslide: */
+var specificLS = ee.FeatureCollection(table).filter(ee.Filter.eq('Number','1'));
+var GraphLS = ui.Chart.image.series(Indices.select(['NDVI','NDMI']),table,ee.Reducer.mean(), 10)
+    .setChartType('LineChart')
+    .setOptions({
+      title: 'Sentinel2-1C timeseries for specific landslide',
+      lineWidth: 1,
+      pointSize: 2,
+      vAxes: {
+        0: {title: 'Vegetation Index Value'}
+      },
+      series: {
+        0: {targetAxisIndex: 0},
+        1: {targetAxisIndex: 0},
+        2: {targetAxisIndex: 0}
+      } 
+  });
+
+/* We have created the graph and stored it in a variable, but we still need to print
+it in the console to be able to see it. →→ */
+print(GraphLS);
+
+/* Open the graph in a new tab using the small arrow in the rightcorner above the graph.
+Are you able to see when the landslide disturbance happened?
+Are you able to see that the cloud mask worked?
+
+You can now try to change the code by selecting a different landslide. Landslides are numbered
+from 1 - 100, where do you need to change the code to be able to create a graph for a different
+landslide? Hint: check the filtering option.
+
+"And they lived happily ever after"
+THE END
+
+*/
